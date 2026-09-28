@@ -12,7 +12,9 @@ Two modes, wired in hooks/hooks.json:
                       contains `ok <CODE>`, where CODE is derived from the plan
                       file's content, and that prompt came after the plan was
                       written. Editing the plan after approval changes the code.
-                    - once a session has touched pr-assistant scripts, direct
+                    - once a session has touched pr-assistant scripts, `git commit`
+                      with a Co-Authored-By / "Generated with Claude" line is
+                      denied, and direct
                       GitHub writes (gh pr comment/review/merge, gh api
                       POST/PATCH/PUT/DELETE, GraphQL mutations, git push) are
                       denied: every write must go through an approved plan.
@@ -80,6 +82,15 @@ GITHUB_WRITE_PATTERNS = [
     r"\bgh\s+api\s+graphql\b[^|;&]*\bmutation\b",
     r"\bcurl\b[^|;&]*api\.github\.com[^|;&]*(-X\s*(POST|PUT|PATCH|DELETE)|--data|-d\s)",
 ]
+
+
+ATTRIBUTION = re.compile(r"co-authored-by:[^\n]*(claude|anthropic)|generated with \[?claude|claude\.com/claude-code",
+                         re.IGNORECASE)
+
+
+def is_attributed_commit(cmd):
+    """git commit whose message (inline or from a heredoc in the same command) credits the assistant."""
+    return bool(re.search(r"\bgit\b[^|;&]*\bcommit\b", cmd)) and bool(ATTRIBUTION.search(cmd))
 
 
 def is_github_write(cmd):
@@ -152,6 +163,10 @@ def mode_pretool(event):
             data["active"] = True
             save_session(sid, data)
 
+    if data.get("active") and is_attributed_commit(cmd):
+        decide("deny",
+               "pr-assistant: commit messages must not credit the assistant (no Co-Authored-By or "
+               "\"Generated with\" lines). Commit again with only the description of the change.")
     if data.get("active") and is_github_write(cmd):
         decide("deny",
                "pr-assistant: direct GitHub writes are blocked in this session. Put the action into a plan "

@@ -21,6 +21,7 @@ To send exactly this, reply: ok 039CD8
 - "yes" or "go ahead" is not accepted; it has to be the code. If the plan changes after approval, the code changes too and sending is blocked.
 - While a pr-assistant session is running, direct `gh pr comment/review/merge`, `gh api` with POST/PATCH/PUT/DELETE, GraphQL mutations and `git push` are denied.
 - The hook answers `deny`, which also applies in `bypassPermissions` mode.
+- Commits, replies and comments carry no trace of the assistant: no `Co-Authored-By`, no "Generated with Claude", no mention of Claude or AI. The hook denies a commit with such a line.
 - Other Claude Code sessions are not affected.
 - Reviews are always posted as `COMMENT`: the plugin never approves or requests changes. It doesn't resolve threads either; that's the reviewer's call.
 
@@ -53,6 +54,16 @@ The plugin doesn't touch your working copy: it doesn't switch branches or touch 
 Results are cached by head SHA: if a PR hasn't changed since the last run, a rerun costs nothing. Pass the effort level as an argument: `/pr-assistant:review-requests high`. The default is `medium`; in my runs it produced little noise.
 
 Reviews use your Claude subscription limits. A small PR takes 1–2 minutes and 150–700K tokens, a large one up to 3.6M. By default 2 reviews run at once; set it with `jobs=N` (at most 4): `/pr-assistant:review-requests jobs=3`. Parallelism doesn't save tokens per PR; it spends the same limit faster. If you hit the limit, no new reviews start, the running ones finish, and the run shows what's left.
+
+## Re-reviews
+
+Before each review the plugin looks at what has already been said on the PR and picks a mode:
+
+- you haven't commented on this PR yet — a normal review;
+- you reviewed it before and new commits came in — only the changes after your last review are reviewed, and only confirmed 🔴 blockers make it into the report. If `main` was merged into the branch or the history was rewritten since, the whole PR is reviewed with the same filter;
+- no new commits since your review, or the author hasn't replied to a thread you started — no review runs; the PR is listed as skipped with the reason. A thread the author replied to counts as resolved, even if nobody resolved it.
+
+A finding already raised in any comment on the PR (yours or someone else's, resolved or not) is dropped from the report. This keeps the plugin from repeating what was said and from endless review rounds with new nitpicks. You can force a skipped PR: "recheck #65".
 
 ## Related PRs
 
@@ -87,6 +98,7 @@ scripts/
   prepare-worktree.sh      clone + worktree (review: detached, own: branch pr-assistant/<N>)
   group-prs.py             groups PRs by task
   review-batch.py          parallel run of reviews and group checks
+  review-history.py        what was already said on the PR, review mode
   review-pr.sh             worktree + review + cache for one PR
   run-code-review.sh       read-only /code-review run
   cross-review.sh          read-only check of a PR group against each other

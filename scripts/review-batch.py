@@ -6,15 +6,25 @@ with up to `jobs` reviews running at once (default 2, at most 4). Each review is
 review-pr.sh in its own process. When every PR of a task group (same `task`) is
 reviewed, one cross-review.sh pass checks the PRs against each other.
 
+Before each review, review-history.py decides the mode from what you already
+said on the PR: "full" (first review), "blockers" (you commented before and the
+PR changed: only the changes since your last review, report confirmed blockers
+only) or "skip" (nothing changed, or a thread you started is unresolved). An
+input PR may carry "mode_override": "full" | "blockers" to force a mode when the
+user explicitly asks to recheck it.
+
 If a review hits the Claude usage limit (exit 3) or the clone folder is not
 configured (exit 4), nothing new is started; the
 running reviews finish and the rest is reported as not started.
 
 Progress goes to <run_dir>/progress.log and stderr. At the end prints JSON:
-  {run_dir, reviews: [{repo, number, task, status, file, seconds, error}],
-   cross: [{task, prs, status, file, seconds, error}], limit_hit}
-status: ok | error | limit | not_configured | not_started. `file` is review-pr.sh's JSON
-(worktree, merge_base, head_sha, url, review_text) or, for cross, the claude
+  {run_dir, reviews: [{repo, number, task, status, mode, reason, history, file, seconds, error}],
+   cross: [{task, prs, mode, status, file, seconds, error}], limit_hit}
+cross mode is "blockers" if any PR of the group was re-reviewed in blockers mode.
+status: ok | skipped | error | limit | not_configured | not_started. `history` is
+review-history.py's JSON (existing comments to deduplicate against). `file` is
+review-pr.sh's JSON (worktree, merge_base, head_sha, url, range_base,
+incremental, review_text) or, for cross, the claude
 output whose `result` holds the findings.
 """
 import hashlib
@@ -65,12 +75,25 @@ def tail(path, n=5):
 def review(pr):
     name = f"{pr['repo'].split('/')[-1]}-{pr['number']}"
     out, err = os.path.join(run_dir, name + ".json"), os.path.join(run_dir, name + ".log")
+    hist_file = os.path.join(run_dir, name + ".history.json")
     t0 = time.time()
-    with open(out, "w") as o, open(err, "w") as e:
-        rc = subprocess.call([os.path.join(S, "review-pr.sh"), pr["repo"], str(pr["number"]), effort],
+    res = {"repo": pr["repo"], "number": pr["number"], "task": pr.get("task"), "history": hist_file}
+    with open(hist_file, "w") as h, open(err, "w") as e:
+        rc = subprocess.call([os.path.join(S, "review-history.py"), pr["repo"], str(pr["number"])], stdout=h, stderr=e)
+    if rc != 0:
+        return dict(res, status="error", seconds=round(time.time() - t0), error=tail(err))
+    hist = json.load(open(hist_file))
+    mode, reason = hist["mode"], hist["reason"]
+    if pr.get("mode_override") in ("full", "blockers"):
+        mode, reason = pr["mode_override"], f"forced by the user (was: {reason})"
+    res.update(mode=mode, reason=reason)
+    if mode == "skip":
+        return dict(res, status="skipped", seconds=0)
+    since = [hist["last_reviewed_sha"]] if mode == "blockers" and hist.get("last_reviewed_sha") else []
+    with open(out, "w") as o, open(err, "a") as e:
+        rc = subprocess.call([os.path.join(S, "review-pr.sh"), pr["repo"], str(pr["number"]), effort, *since],
                              stdout=o, stderr=e)
-    res = {"repo": pr["repo"], "number": pr["number"], "task": pr.get("task"), "status": status_of(rc),
-           "file": out, "seconds": round(time.time() - t0)}
+    res.update(status=status_of(rc), file=out, seconds=round(time.time() - t0))
     if rc != 0:
         res["error"] = tail(err)
     return res
@@ -84,7 +107,8 @@ def cross(task, members):
     key = hashlib.sha256("|".join(f"{i['repo']}#{i['number']}@{i['head_sha']}" for i in infos).encode()).hexdigest()[:10]
     safe_task = "".join(c if c.isalnum() or c in "-_." else "_" for c in task)
     out = os.path.join(STATE_DIR, "reviews", f"cross-{safe_task}-{key}.json")
-    res = {"task": task, "prs": [f"{i['repo']}#{i['number']}" for i in infos], "file": out}
+    res = {"task": task, "prs": [f"{i['repo']}#{i['number']}" for i in infos], "file": out,
+           "mode": "blockers" if any(r.get("mode") == "blockers" for r in members) else "full"}
     t0 = time.time()
     if os.path.exists(out) and os.path.getsize(out):
         log(f"{task}: cross-review cached")
@@ -138,7 +162,8 @@ with ThreadPoolExecutor(max_workers=jobs) as pool:
                 log(f"{res['task']}: cross-review {res['status']} ({res['seconds']}s)")
                 continue
             reviews.append(res)
-            log(f"{short(item)}: {res['status']} ({res['seconds']}s)")
+            log(f"{short(item)}: {res['status']}" + (f", {res['mode']}" if res.get("mode") not in (None, "skip") else "")
+                + (f" — {res['reason']}" if res["status"] == "skipped" else f" ({res['seconds']}s)"))
             task = res["task"]
             if task in groups:
                 done_by_task[task].append(res)

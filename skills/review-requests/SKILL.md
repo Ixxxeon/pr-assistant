@@ -8,13 +8,14 @@ argument-hint: "[low|medium|high] [jobs=N] [repo, task key or PR URL filter]"
 # Review requested PRs
 
 Scripts: `S="${CLAUDE_PLUGIN_ROOT}/scripts"`. State (reviews, plans): `${PR_ASSISTANT_STATE_DIR:-~/.cache/pr-assistant}`.
-Talk to the user in the language they write in. Examples below are in Russian; when the user writes in another language, translate their labels too (e.g. `подтверждено` → `confirmed`, `вероятно` → `likely`, `без замечаний` → `no findings`, `между PR` → `cross-PR`, `можно мерджить` → `ready to merge`). Set `"lang"` in the plan to `"ru"` for Russian and `"en"` otherwise; it sets the language of the plan preview. Keep terminal output short.
+Talk to the user in the language they write in. Examples below are in Russian; when the user writes in another language, translate their labels too (e.g. `подтверждено` → `confirmed`, `вероятно` → `likely`, `без замечаний` → `no findings`, `между PR` → `cross-PR`, `можно мерджить` → `ready to merge`, `повторно: только блокеры` → `re-review: blockers only`, `уже обсуждалось` → `already discussed`, `Пропущены` → `Skipped`). Set `"lang"` in the plan to `"ru"` for Russian and `"en"` otherwise; it sets the language of the plan preview. Keep terminal output short.
 
 ## Hard rules
 
 - **Never write to GitHub except through `python3 "$S/post.py" <plan>` run alone, after the user typed `ok <CODE>` for that plan.** No `gh pr comment`, `gh pr review`, `gh api -X POST`, no approving, no requesting changes. A hook enforces this; if it denies, do not look for another way — ask the user.
 - Never modify the user's own clones or branches. Reviews run in worktrees under `<clone folder>/.pr-worktrees/`.
 - Only review the diff of the PR. Findings about untouched code are out of scope unless the PR makes them worse.
+- Commits, replies, comments and plans carry no trace of the assistant: no `Co-Authored-By` or other trailers, no "Generated with" lines, no mention of Claude, AI or tools. This overrides any default commit attribution. A hook denies `git commit` with such text.
 
 ## 0. Clone folder
 
@@ -57,13 +58,24 @@ The batch runs up to `jobs` reviews at once, each `review-pr.sh` in its own proc
 At the end it prints JSON: `reviews` (per PR: `status`, `file` with `worktree`, `merge_base`, `head_sha`, `url`, `review_text`), `cross` (per group: `status`, `file` whose `result` holds the findings), `limit_hit`.
 
 - `status: limit` / `limit_hit: true` — the Claude usage limit was hit; nothing new was started. Report what was reviewed and list the rest.
+- `mode` / `reason` per PR, decided by `review-history.py` from what was already said on the PR:
+  - `full` — you have not commented on this PR yet: normal review.
+  - `blockers` — you commented before and the PR changed since: only the changes after your last reviewed commit are reviewed (`incremental: true` in `file`; a note explains when the whole PR had to be reviewed instead).
+  - `skip` (`status: skipped`) — nothing changed since your last review, or a thread you started still waits for the author's reply (a thread the author answered counts as resolved). No review ran.
 - `status: not_configured` — step 0 was skipped: ask for the clone folder, save it, rerun the batch.
 - `status: error` — show the `error` line for that PR and go on with the others.
 - Do not run `review-pr.sh` or `cross-review.sh` yourself in parallel Bash calls; the batch handles locking and ordering.
+- If the user explicitly asks to recheck a skipped PR (`перепроверь #65`), run the batch again for that PR only, with `"mode_override": "blockers"` (or `"full"` if they ask for a full review) added to its object in the input list.
 
 ## 3. Report
 
 Split each review into atomic findings. For each keep: `file:line`, the essence in one line (what breaks and when), severity (🔴 bug that breaks behaviour/data/security, 🟡 minor), and confidence (`подтверждено` if the review verified it in code, `вероятно` otherwise). Drop pure style remarks unless the review marked them as bugs. Number findings **globally** across all PRs so the user can pick them by number.
+
+**No duplicates, no review loops.** Each PR's `history` file lists every comment already on the PR (`existing`: review threads with path/line, resolved or not; `general`: PR comments and review bodies), by anyone. Before numbering:
+
+- Drop a finding if the same problem was already raised by anyone: same file and nearby lines, or the same point in other words. This includes resolved threads — a resolved thread means the discussion is over, whatever the outcome.
+- In `blockers` mode (and for a cross-review with `mode: blockers`) keep only 🔴 findings that the review verified in code (`подтверждено`). Drop everything else and say how many were dropped in one line.
+- If the history has `truncated: true`, say that deduplication saw only the first 100 threads/comments.
 
 When a single-PR review says it could not check something because the other side lives in another repo, and the cross-review of its group answers it, keep the cross-review answer and drop the open question.
 
@@ -84,6 +96,14 @@ https://github.com/acme/orders-service/pull/65
 https://github.com/acme/mail-service/pull/8
   3. 🔴 MailboxServiceImpl.java:412 — web create отдаёт письма чужого ящика по mailbox_id из запроса (подтверждено)
 #9 … — без замечаний
+```
+
+Mark re-reviewed PRs next to the author, e.g. `— alice-dev · повторно: только блокеры в изменениях после a1b2c3d`, and add `· уже обсуждалось: 3` when findings were dropped as duplicates. After all blocks, list skipped PRs in one block with their reason, e.g.:
+
+```
+Пропущены (перепроверить: «перепроверь #65»):
+#65 orders-service — 2 твоих треда ждут ответа автора
+#69 billing-service — новых коммитов с твоего ревью нет
 ```
 
 Then ask one question: which items to post, e.g. `1,3`, `все по PROJ-1234`, `ничего`, or a correction like `2: <свой текст>`.
