@@ -1,0 +1,12 @@
+{
+  "name": "pr-assistant",
+  "owner": { "name": "Ixxxeon" },
+  "description": "PR review and follow-up helpers for Claude Code",
+  "plugins": [
+    {
+      "name": "pr-assistant",
+      "source": "./",
+      "description": "Review PRs requested from you and follow up on comments on your own PRs, with a typed-approval gate for every GitHub write."
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "name": "pr-assistant",
+  "displayName": "PR Assistant",
+  "version": "0.3.0",
+  "description": "Review PRs requested from you with Claude Code /code-review, and follow up on review comments on your own PRs. Nothing is posted to GitHub without an explicit typed approval.",
+  "author": {
+    "name": "Ixxxeon"
+  },
+  "skills": [
+    "./skills/"
+  ],
+  "hooks": "./hooks/hooks.json",
+  "homepage": "https://github.com/Ixxxeon/pr-assistant",
+  "repository": "https://github.com/Ixxxeon/pr-assistant",
+  "license": "MIT"
+}
