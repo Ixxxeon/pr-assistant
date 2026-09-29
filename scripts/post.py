@@ -9,7 +9,9 @@ changes). If GitHub rejects the inline anchors, comments are retried one by one
 and the rejected ones go into a general comment with their file:line.
 
 Follow-up plans ("prs"), per PR, in this order:
-  1. push the worktree branch (fast-forward only, never --force);
+  1. push the worktree branch (fast-forward only, never --force), then
+     fast-forward the user's local branch of the same name if it has nothing
+     of its own (git refuses if that would overwrite uncommitted changes);
   2. all thread replies + general text as ONE submitted COMMENT review
      (a pending review, replies added to it, then submitted — one notification);
   3. re-request review from the listed reviewers (the UI "Re-request review").
@@ -52,6 +54,39 @@ def gql(query, **variables):
     return d["data"], None
 
 
+def git(*args):
+    r = subprocess.run(["git", *args], capture_output=True, text=True)
+    return r.returncode, (r.stdout.strip() if r.returncode == 0 else (r.stderr or r.stdout).strip())
+
+
+def sync_local_branch(wt, branch, tag, log):
+    """After a push, fast-forward the user's local <branch> in the same clone to the
+    pushed commit, so no pull is needed. Only a fast-forward; a diverged branch or a
+    checkout git refuses to update is left as is and reported."""
+    _, new = git("-C", wt, "rev-parse", "HEAD")
+    rc, old = git("-C", wt, "rev-parse", "--verify", "-q", f"refs/heads/{branch}")
+    if rc != 0 or old == new:
+        return
+    if git("-C", wt, "merge-base", "--is-ancestor", old, new)[0] != 0:
+        log.append(f"  local {branch} ({tag}) has commits not on origin; not updated")
+        return
+    _, listing = git("-C", wt, "worktree", "list", "--porcelain")
+    checkout = None
+    for block in listing.split("\n\n"):
+        lines = block.splitlines()
+        if f"branch refs/heads/{branch}" in lines:
+            checkout = lines[0].split(" ", 1)[1]
+    if checkout is None:
+        rc, err = git("-C", wt, "update-ref", f"refs/heads/{branch}", new, old)
+    else:
+        # git refuses the fast-forward if it would overwrite uncommitted changes
+        rc, err = git("-C", checkout, "merge", "--ff-only", "-q", new)
+    if rc == 0:
+        log.append(f"  local {branch}: fast-forwarded to {new[:10]}" + (f" in {checkout}" if checkout else ""))
+    else:
+        log.append(f"  local {branch} ({tag}): not updated ({err.splitlines()[0][:200] if err else 'git failed'}); run git pull in {checkout or 'the clone'}")
+
+
 def followup(pr, log):
     repo, n = pr["repo"], pr["number"]
     tag = f"{repo}#{n}"
@@ -63,6 +98,7 @@ def followup(pr, log):
             log.append(f"push {tag}: FAILED {r.stderr.strip()[:300]}\n  replies and re-request for {tag} skipped")
             return
         log.append(f"push {tag} → {push['remote_branch']}: ok")
+        sync_local_branch(push["worktree"], push["remote_branch"], tag, log)
 
     replies, general = pr.get("replies", []), pr.get("general", [])
     if replies or general:

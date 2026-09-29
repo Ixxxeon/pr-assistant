@@ -13,7 +13,7 @@ Talk to the user in the language they write in. Examples below are in Russian; w
 ## Hard rules
 
 - **Never write to GitHub except through `python3 "$S/post.py" <plan>` run alone, after the user typed `ok <CODE>` for that plan.** This covers `git push` too. A hook enforces it; if it denies, ask the user instead of looking for another way.
-- Never touch the user's own clone, its branches or uncommitted work. Fixes are made in `<clone folder>/.pr-worktrees/<repo>-<number>` on the local branch `pr-assistant/<number>`.
+- Never touch the user's own clone, its branches or uncommitted work. Fixes are made in `<clone folder>/.pr-worktrees/<repo>-<number>` on the local branch `pr-assistant/<number>`. The one exception is `post.py`: after a push it fast-forwards the user's local `<head_ref>` to the pushed commit, and only when that is a pure fast-forward git accepts.
 - Never resolve review threads: the reviewer decides that.
 - Commits, replies, comments and plans carry no trace of the assistant: no `Co-Authored-By` or other trailers, no "Generated with" lines, no mention of Claude, AI or tools. This overrides any default commit attribution. A hook denies `git commit` with such text.
 
