@@ -1,6 +1,6 @@
 ---
 name: review-requests
-description: Review every open GitHub PR where a review is requested from the user personally, using Claude Code /code-review, report findings briefly per repository, and post selected findings as PR review comments only after typed approval.
+description: Review every open GitHub PR where a review is requested from the user personally, using Claude Code /code-review, report findings briefly per repository with a short mark of whether each PR needs a human read, post selected findings as PR review comments and approve clean PRs, only after typed approval.
 disable-model-invocation: true
 argument-hint: "[low|medium|high] [jobs=N] [repo, task key or PR URL filter]"
 ---
@@ -8,11 +8,11 @@ argument-hint: "[low|medium|high] [jobs=N] [repo, task key or PR URL filter]"
 # Review requested PRs
 
 Scripts: `S="${CLAUDE_PLUGIN_ROOT}/scripts"`. State (reviews, plans): `${PR_ASSISTANT_STATE_DIR:-~/.cache/pr-assistant}`.
-Talk to the user in the language they write in. Examples below are in Russian; when the user writes in another language, translate their labels too (e.g. `подтверждено` → `confirmed`, `вероятно` → `likely`, `без замечаний` → `no findings`, `между PR` → `cross-PR`, `можно мерджить` → `ready to merge`, `повторно: только блокеры` → `re-review: blockers only`, `уже обсуждалось` → `already discussed`, `Пропущены` → `Skipped`). Set `"lang"` in the plan to `"ru"` for Russian and `"en"` otherwise; it sets the language of the plan preview. Keep terminal output short.
+Talk to the user in the language they write in. Examples below are in Russian; when the user writes in another language, translate their labels too (e.g. `подтверждено` → `confirmed`, `вероятно` → `likely`, `без замечаний` → `no findings`, `между PR` → `cross-PR`, `можно мерджить` → `ready to merge`, `повторно: только блокеры` → `re-review: blockers only`, `уже обсуждалось` → `already discussed`, `Пропущены` → `Skipped`, `👀 глазами` → `👀 read it`, `⚡ хватит замечаний` → `⚡ findings enough`, `Можно апрувить` → `Can approve`). Set `"lang"` in the plan to `"ru"` for Russian and `"en"` otherwise; it sets the language of the plan preview. Keep terminal output short.
 
 ## Hard rules
 
-- **Never write to GitHub except through `python3 "$S/post.py" <plan>` run alone, after the user typed `ok <CODE>` for that plan.** No `gh pr comment`, `gh pr review`, `gh api -X POST`, no approving, no requesting changes. A hook enforces this; if it denies, do not look for another way — ask the user.
+- **Never write to GitHub except through `python3 "$S/post.py" <plan>` run alone, after the user typed `ok <CODE>` for that plan.** No `gh pr comment`, `gh pr review`, `gh api -X POST`, no requesting changes. Approving goes only through a plan entry with `"approve": true` (step 5). A hook enforces this; if it denies, do not look for another way — ask the user.
 - Never modify the user's own clones or branches. Reviews run in worktrees under `<clone folder>/.pr-worktrees/`.
 - Only review the diff of the PR. Findings about untouched code are out of scope unless the PR makes them worse.
 - Commits, replies, comments and plans carry no trace of the assistant: no `Co-Authored-By` or other trailers, no "Generated with" lines, no mention of Claude, AI or tools. This overrides any default commit attribution. A hook denies `git commit` with such text.
@@ -39,7 +39,7 @@ Arguments: `$ARGUMENTS` — optional effort (`low|medium|high`, default `medium`
 "$S/list-review-requests.sh"
 ```
 
-This lists open PRs where review is requested from the user personally; team-only requests are excluded by design. Each PR has `task`: PRs of one task (shared ticket key in title or branch, same branch name across repos, or a link between PR bodies) get the same `task`, standalone PRs get `null`. Apply the filter; a task-key filter keeps the whole group. Skip drafts unless the filter names them. If nothing is left, say so with one line and stop.
+This lists open PRs where review is requested from the user personally; team-only requests are excluded by design. Each PR carries `additions`, `deletions`, `changed_files` for the complexity mark in step 3. Each PR has `task`: PRs of one task (shared ticket key in title or branch, same branch name across repos, or a link between PR bodies) get the same `task`, standalone PRs get `null`. Apply the filter; a task-key filter keeps the whole group. Skip drafts unless the filter names them. If nothing is left, say so with one line and stop.
 
 Before starting, print one line: how many PRs, which task groups (`PROJ-1234: 5 PR`), how many run at once.
 
@@ -90,13 +90,22 @@ https://github.com/acme/orders-service/pull/65 и ещё 4
 https://github.com/acme/orders-service/pull/65
   2. 🟡 …
 #14 catalog-service: … — без замечаний
+https://github.com/acme/catalog-service/pull/14 · ⚡ хватит замечаний
 
 ## mail-service
 #8 Guest access to mailboxes — bob-k
-https://github.com/acme/mail-service/pull/8
+https://github.com/acme/mail-service/pull/8 · 👀 глазами
   3. 🔴 MailboxServiceImpl.java:412 — web create отдаёт письма чужого ящика по mailbox_id из запроса (подтверждено)
 #9 … — без замечаний
+https://github.com/acme/mail-service/pull/9 · ⚡ хватит замечаний
 ```
+
+**Complexity mark.** Every reviewed PR gets its link line, followed by one mark: whether the user should read the PR themselves or can rely on the findings alone. No explanation, just the mark:
+
+- `👀 глазами` — any of: more than ~300 changed lines (`additions + deletions`) or more than 15 files; it touches DB migrations or schema, auth/permissions/security, money, concurrency or transactions, public API or event contracts between services, deploy or infra config; it brings a new module or design decision that a diff review cannot judge; the review said it could not verify something that matters.
+- `⚡ хватит замечаний` — everything else: small, local or mechanical changes (renames, a straightforward fix, tests, docs, dependency or config bumps within one service).
+
+Judge by the diff content, not only by size: a 20-line change to a permission check is `👀`. Skipped PRs get no mark. In a task group the mark goes on each PR's own link line, not on the group line (`… и ещё 4`).
 
 Mark re-reviewed PRs next to the author, e.g. `— alice-dev · повторно: только блокеры в изменениях после a1b2c3d`, and add `· уже обсуждалось: 3` when findings were dropped as duplicates. After all blocks, list skipped PRs in one block with their reason, e.g.:
 
@@ -106,7 +115,13 @@ Mark re-reviewed PRs next to the author, e.g. `— alice-dev · повторно
 #69 billing-service — новых коммитов с твоего ревью нет
 ```
 
-Then ask one question: which items to post, e.g. `1,3`, `все по PROJ-1234`, `ничего`, or a correction like `2: <свой текст>`.
+**Approve candidates.** A PR can be approved when: its review finished (`status: ok`, not a draft), nothing is left for it after deduplication and filtering (no numbered finding on it, including cross-PR findings anchored to it), the cross-review of its task group finished if it has one, and the review left no open question about it. List them in one line after the skipped block, with their marks:
+
+```
+Можно апрувить: #14 catalog-service ⚡, #9 mail-service ⚡
+```
+
+Then ask one question: which items to post and which clean PRs to approve, e.g. `1,3`, `все по PROJ-1234`, `ничего`, `1,3 + апрув #14`, `апрув всех чистых`, or a correction like `2: <свой текст>`. Offer approval only for PRs from that line; a PR with comments in this plan is never approved in it. If there are no findings at all, ask only about approval.
 
 ## 4. Draft comments for the chosen items
 
@@ -124,13 +139,14 @@ Write each comment for a colleague, in the language of the PR discussion (the us
 
 ## 5. Plan, approve, post
 
-Build one plan for all chosen items (one review per PR, `commit_id` = the reviewed head SHA):
+Build one plan for all chosen items (one review per PR, `commit_id` = the reviewed head SHA). A PR to approve gets an entry with `"approve": true` and no `comments` or `general`:
 
 ```bash
 python3 "$S/plan.py" <<'JSON'
 {"kind":"review","lang":"ru","reviews":[{"repo":"Owner/name","number":8,"commit_id":"<head_sha>",
   "comments":[{"n":1,"path":"src/…/MailboxServiceImpl.java","line":412,"body":"…"}],
-  "general":[]}]}
+  "general":[]},
+ {"repo":"Owner/catalog-service","number":14,"commit_id":"<head_sha>","approve":true}]}
 JSON
 ```
 
@@ -140,4 +156,4 @@ Show the printed preview to the user unchanged, including the last line `ok <COD
 python3 "$S/post.py" <PLAN_FILE>
 ```
 
-and print the links it returns. If the user changes anything instead, rebuild the plan (it gets a new code) and ask again. Posting is always a `COMMENT` review: the plugin never approves or requests changes.
+and print the links it returns. If the user changes anything instead, rebuild the plan (it gets a new code) and ask again. Comments are posted as a `COMMENT` review; the plugin never requests changes. An approval is an `APPROVE` review without text, sent only if the PR head is still the reviewed commit; if new commits came in, the approval is skipped and the output says so.

@@ -4,7 +4,7 @@
 
 A Claude Code plugin with two commands for GitHub pull requests:
 
-- `/pr-assistant:review-requests` finds open PRs where a review is requested from you personally (team requests don't count) and runs Claude Code `/code-review` on each, several PRs at a time. PRs that belong to one task get an extra check against each other. You get a short report grouped by task and repository, with numbered findings. Pick the numbers, and it drafts short comments and posts them as one review per PR after your approval.
+- `/pr-assistant:review-requests` finds open PRs where a review is requested from you personally (team requests don't count) and runs Claude Code `/code-review` on each, several PRs at a time. PRs that belong to one task get an extra check against each other. You get a short report grouped by task and repository, with numbered findings. Next to each PR link there is a mark: `👀` means the PR is worth reading yourself (large, or touches migrations, security, money, contracts between services), `⚡` means the findings are enough. Pick the numbers, and it drafts short comments and posts them as one review per PR after your approval. PRs with no findings are offered for approval; pick the ones to approve in the same answer.
 - `/pr-assistant:my-prs` goes through your open PRs, finds unresolved comments you haven't answered, makes the fixes you agree with (in a separate worktree, one commit per comment) and shows a summary. PRs with two approvals are marked ready to merge. After your approval it does three things per PR: pushes the fixes, sends all replies as one review (like "Submit review" in the UI, so the reviewer gets one notification instead of a pile) and re-requests review from those waiting for it ("Re-request review"). Replies are short: "Done", "Added the javadoc". If the push fails, nothing is sent for that PR, so "Done" never goes out without the fix.
 
 Both reports link to the PRs. The plugin answers in the language you write to Claude in, and writes PR comments in the language of the PR discussion.
@@ -23,7 +23,7 @@ To send exactly this, reply: ok 039CD8
 - The hook answers `deny`, which also applies in `bypassPermissions` mode.
 - Commits, replies and comments carry no trace of the assistant: no `Co-Authored-By`, no "Generated with Claude", no mention of Claude or AI. The hook denies a commit with such a line.
 - Other Claude Code sessions are not affected.
-- Reviews are always posted as `COMMENT`: the plugin never approves or requests changes. It doesn't resolve threads either; that's the reviewer's call.
+- Comments are posted as a `COMMENT` review; the plugin never requests changes. It approves only a PR with no findings, only if you chose it in the plan, and only if the PR has no new commits since the review. It doesn't resolve threads either; that's the reviewer's call.
 
 Limitation: the hook checks command text. It protects against accidental sends, not against a model deliberately looking for a way around it. For example, it won't stop a script of its own that calls `gh`. The skills explicitly forbid doing that.
 

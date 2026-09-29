@@ -4,9 +4,11 @@
 guard.py lets this run only after the user typed `ok <CODE>` for this exact
 plan file. A plan is sent once: a `.sent` marker blocks re-sending.
 
-Review plans ("reviews"): one COMMENT review per PR (never approve or request
-changes). If GitHub rejects the inline anchors, comments are retried one by one
-and the rejected ones go into a general comment with their file:line.
+Review plans ("reviews"): one COMMENT review per PR (never request changes).
+If GitHub rejects the inline anchors, comments are retried one by one and the
+rejected ones go into a general comment with their file:line. An entry with
+"approve": true (and no comments) is posted as an APPROVE review, only if the
+PR head is still the reviewed commit_id; otherwise it is skipped.
 
 Follow-up plans ("prs"), per PR, in this order:
   1. push the worktree branch (fast-forward only, never --force), then
@@ -136,8 +138,26 @@ def followup(pr, log):
         log.append(f"re-request {tag}: " + (", ".join(pr["rerequest"]) if res is not None else f"FAILED {err[:200]}"))
 
 
+def approve(r, log):
+    repo, n = r["repo"], r["number"]
+    tag = f"{repo}#{n}"
+    p = subprocess.run(["gh", "api", f"repos/{repo}/pulls/{n}", "--jq", ".head.sha"], capture_output=True, text=True)
+    head = p.stdout.strip()
+    if p.returncode != 0 or not head:
+        log.append(f"approve {tag}: FAILED to read the PR head ({(p.stderr or p.stdout).strip()[:200]})")
+        return
+    if head != r["commit_id"]:
+        log.append(f"approve {tag}: skipped, new commits since the review ({r['commit_id'][:10]} → {head[:10]})")
+        return
+    res, err = gh_api("POST", f"repos/{repo}/pulls/{n}/reviews", {"commit_id": head, "event": "APPROVE", "body": ""})
+    log.append(f"approve {tag}: " + (res.get("html_url", "ok") if res is not None else f"FAILED {err[:200]}"))
+
+
 def post_review(r, log):
     repo, n = r["repo"], r["number"]
+    if r.get("approve"):
+        approve(r, log)
+        return
     base = f"repos/{repo}/pulls/{n}/reviews"
     inline = [{"path": c["path"], "line": c["line"], "side": "RIGHT", "body": c["body"]} for c in r.get("comments", [])]
     general = [g["body"] for g in r.get("general", [])]

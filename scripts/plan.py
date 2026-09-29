@@ -8,7 +8,9 @@ Input (JSON on stdin):
   "reviews": [                       # review comments on someone else's PR (one GitHub review per PR)
     {"repo": "Owner/name", "number": 12, "commit_id": "<head sha>",
      "comments": [{"n": 1, "path": "src/A.java", "line": 42, "body": "..."}],   # inline, RIGHT side
-     "general":  [{"n": 2, "body": "..."}]}                                       # no line anchor
+     "general":  [{"n": 2, "body": "..."}]},                                      # no line anchor
+    {"repo": "Owner/name", "number": 13, "commit_id": "<head sha>",
+     "approve": true}                # approve a PR with no findings; no comments allowed with it
   ],
   "prs": [                           # follow-up on your own PR: all of it goes out as one batch per PR
     {"repo": "Owner/name", "number": 7, "pr_node_id": "PR_kw...",
@@ -50,6 +52,12 @@ def validate(p):
         for g in r.get("general", []):
             if not g.get("body", "").strip():
                 fail("general comment needs a body")
+        if r.get("approve") not in (None, False, True):
+            fail("approve must be true or false")
+        if r.get("approve") and (r.get("comments") or r.get("general")):
+            fail(f"{r['repo']}#{r['number']}: approve only a PR without comments")
+        if not (r.get("approve") or r.get("comments") or r.get("general")):
+            fail(f"nothing to do for {r['repo']}#{r['number']}")
     for pr in p.get("prs", []):
         for k in ("repo", "number", "pr_node_id"):
             if not pr.get(k):
@@ -77,10 +85,10 @@ def validate(p):
 TEXT = {
     "en": {"general": "(general comment)", "no_commits": "(no new commits)", "one_review": "as one review:",
            "to_thread": "to thread", "to_body": "review body", "rerequest": "re-request review",
-           "approve": "To send exactly this, reply: ok {code}"},
+           "approve_pr": "✅ approve (no comments)", "approve": "To send exactly this, reply: ok {code}"},
     "ru": {"general": "(общий комментарий)", "no_commits": "(нет новых коммитов)", "one_review": "одним ревью:",
            "to_thread": "в тред", "to_body": "в тело ревью", "rerequest": "перезапросить ревью",
-           "approve": "Чтобы отправить ровно это, ответь: ok {code}"},
+           "approve_pr": "✅ апрув (без комментариев)", "approve": "Чтобы отправить ровно это, ответь: ok {code}"},
 }
 
 
@@ -93,6 +101,8 @@ def preview(p):
             lines.append(f"  [{c.get('n', '-')}] {c['path']}:{c['line']}\n      {c['body']}")
         for g in r.get("general", []):
             lines.append(f"  [{g.get('n', '-')}] {t['general']}\n      {g['body']}")
+        if r.get("approve"):
+            lines.append(f"  {t['approve_pr']}")
     for pr in p.get("prs", []):
         lines.append(f"\n{pr['repo']}#{pr['number']}  https://github.com/{pr['repo']}/pull/{pr['number']}")
         push = pr.get("push")
