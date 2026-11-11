@@ -13,9 +13,9 @@ only) or "skip" (nothing changed, or a thread you started is unresolved). An
 input PR may carry "mode_override": "full" | "blockers" to force a mode when the
 user explicitly asks to recheck it.
 
-If a review hits the Claude usage limit (exit 3) or the clone folder is not
-configured (exit 4), nothing new is started; the
-running reviews finish and the rest is reported as not started.
+If a review hits the selected CLI's usage limit (exit 3) or setup is incomplete
+(exit 4), nothing new is started; the running reviews finish and the rest is
+reported as not started.
 
 Progress goes to <run_dir>/progress.log and stderr. At the end prints JSON:
   {run_dir, reviews: [{repo, number, task, status, mode, reason, history, file, seconds, error}],
@@ -24,10 +24,9 @@ cross mode is "blockers" if any PR of the group was re-reviewed in blockers mode
 status: ok | skipped | error | limit | not_configured | not_started. `history` is
 review-history.py's JSON (existing comments to deduplicate against). `file` is
 review-pr.sh's JSON (worktree, merge_base, head_sha, url, range_base,
-incremental, review_text) or, for cross, the claude
-output whose `result` holds the findings.
+incremental, review_text) or, for cross, the normalized result whose `result`
+holds the findings.
 """
-import hashlib
 import json
 import os
 import subprocess
@@ -35,6 +34,8 @@ import sys
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from reviewer import settings, fingerprint
+from reviewers import ReviewError
 
 S = os.path.dirname(os.path.abspath(__file__))
 STATE_DIR = os.path.expanduser(os.environ.get("PR_ASSISTANT_STATE_DIR", "~/.cache/pr-assistant"))
@@ -42,6 +43,11 @@ MAX_JOBS = 4
 
 effort = sys.argv[1] if len(sys.argv) > 1 else "medium"
 jobs = max(1, min(MAX_JOBS, int(sys.argv[2]) if len(sys.argv) > 2 else 2))
+try:
+    selected_reviewer = settings(effort)
+except ReviewError as error:
+    print(f"pr-assistant: {error}", file=sys.stderr)
+    sys.exit(error.code)
 prs = json.load(sys.stdin)
 run_dir = os.path.join(STATE_DIR, "batches", time.strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}")
 os.makedirs(run_dir)
@@ -104,7 +110,8 @@ def cross(task, members):
                   title=next(p.get("title", "") for p in prs if p["repo"] == r["repo"] and p["number"] == r["number"]))
              for r in members]
     infos.sort(key=lambda i: (i["repo"], i["number"]))
-    key = hashlib.sha256("|".join(f"{i['repo']}#{i['number']}@{i['head_sha']}" for i in infos).encode()).hexdigest()[:10]
+    key = fingerprint({"reviewer": selected_reviewer, "prs": [
+        {k: i[k] for k in ("repo", "number", "merge_base", "head_sha")} for i in infos]})
     safe_task = "".join(c if c.isalnum() or c in "-_." else "_" for c in task)
     out = os.path.join(STATE_DIR, "reviews", f"cross-{safe_task}-{key}.json")
     res = {"task": task, "prs": [f"{i['repo']}#{i['number']}" for i in infos], "file": out,
@@ -118,7 +125,7 @@ def cross(task, members):
         json.dump({"task": task, "prs": [{k: i[k] for k in ("repo", "number", "title", "url", "worktree",
                                                             "merge_base", "head_sha")} for i in infos]}, f)
     with open(os.path.join(run_dir, f"cross-{safe_task}.log"), "w") as e:
-        rc = subprocess.call([os.path.join(S, "cross-review.sh"), spec, out], stdout=e, stderr=e)
+        rc = subprocess.call([os.path.join(S, "cross-review.sh"), spec, out, effort], stdout=e, stderr=e)
     if rc != 0 and os.path.exists(out):
         os.replace(out, out + ".failed")
     res.update(status=status_of(rc), seconds=round(time.time() - t0))
@@ -134,7 +141,8 @@ for pr in prs:
 groups = {t: m for t, m in groups.items() if len(m) > 1}
 # Group members first, so a group's cross-review can start as early as possible.
 queue = sorted(prs, key=lambda p: (p.get("task") not in groups, p.get("task") or "", p["repo"], p["number"]))
-log(f"{len(prs)} PR, {len(groups)} task group(s), {jobs} at a time, effort {effort}; log: {run_dir}")
+log(f"{len(prs)} PR, {len(groups)} task group(s), {jobs} at a time, "
+    f"reviewer {selected_reviewer['engine']}, effort {effort}; log: {run_dir}")
 
 reviews, crosses, limit_hit = [], [], False
 done_by_task = {t: [] for t in groups}

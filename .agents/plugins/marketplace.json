@@ -1,0 +1,12 @@
+{
+  "name": "pr-assistant",
+  "interface": { "displayName": "PR Assistant" },
+  "plugins": [
+    {
+      "name": "pr-assistant",
+      "source": { "source": "local", "path": "./" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Productivity"
+    }
+  ]
+}

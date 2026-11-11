@@ -3,6 +3,9 @@
 
   config.py get repos_dir           print the folder for repository clones; exit 4 if not set
   config.py set repos_dir <path>    save it
+  config.py get reviewer            print auto (default), claude or codex
+  config.py set reviewer <value>    override auto, or restore auto
+  config.py set <provider>_model <id>  model override for claude or codex
   config.py clone-dir <owner/repo>  print where this repo's clone is or will be, and whether it exists
 
 repos_dir comes from $PR_ASSISTANT_REPOS_DIR, else from the config file
@@ -39,6 +42,16 @@ def repos_dir():
     return os.path.abspath(os.path.expanduser(value)) if value else None
 
 
+def save_setting(key, value):
+    data = load()
+    data[key] = value
+    os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
+    tmp = CONFIG + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=1)
+    os.replace(tmp, CONFIG)
+
+
 def origin_repo(path):
     """owner/repo of the clone's origin on GitHub, lowercased, or None."""
     if not os.path.isdir(os.path.join(path, ".git")):
@@ -73,12 +86,18 @@ def main():
     elif args[:2] == ["set", "repos_dir"] and len(args) == 3:
         path = os.path.abspath(os.path.expanduser(args[2]))
         os.makedirs(path, exist_ok=True)
-        data = load()
-        data["repos_dir"] = path
-        os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
-        with open(CONFIG, "w") as f:
-            json.dump(data, f, indent=1)
+        save_setting("repos_dir", path)
         print(f"repos_dir = {path} (saved to {CONFIG})")
+    elif len(args) == 3 and args[:2] == ["set", "reviewer"]:
+        if args[2] not in ("auto", "claude", "codex"):
+            sys.exit("reviewer must be auto, claude or codex")
+        save_setting("reviewer", args[2])
+        print(f"reviewer = {args[2]}")
+    elif args == ["get", "reviewer"]:
+        print(os.environ.get("PR_ASSISTANT_REVIEWER") or load().get("reviewer", "auto"))
+    elif len(args) == 3 and args[0] == "set" and args[1] in ("claude_model", "codex_model"):
+        save_setting(args[1], args[2])
+        print(f"{args[1]} = {args[2]}")
     elif args[:1] == ["clone-dir"] and len(args) == 2:
         root = repos_dir()
         if not root:

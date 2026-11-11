@@ -25,6 +25,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from approval import consume
 
 
 def gh_api(method, path, payload):
@@ -188,7 +189,10 @@ def main():
     path = sys.argv[1]
     if os.path.exists(path + ".sent"):
         sys.exit(f"pr-assistant: plan already sent ({path}.sent); build a new plan")
-    plan = json.load(open(path))
+    try:
+        plan = consume(path)
+    except ValueError as error:
+        sys.exit(f"pr-assistant: {error}")
     log = []
 
     for pr in plan.get("prs", []):

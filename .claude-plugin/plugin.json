@@ -1,8 +1,8 @@
 {
   "name": "pr-assistant",
   "displayName": "PR Assistant",
-  "version": "0.5.0",
-  "description": "Review PRs requested from you with Claude Code /code-review, and follow up on review comments on your own PRs. Nothing is posted to GitHub without an explicit typed approval.",
+  "version": "0.6.0",
+  "description": "Review requested GitHub PRs and follow up on your own PRs. The reviewer follows the host automatically; GitHub writes require a typed approval.",
   "author": {
     "name": "Ixxxeon"
   },

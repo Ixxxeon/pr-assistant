@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""pr-assistant approval guard (Claude Code hook).
+"""pr-assistant approval guard (Claude Code and Codex hooks).
 
-Two modes, wired in hooks/hooks.json:
+Modes, wired in the host-specific files under hooks/:
+
+  guard.py start   SessionStart: supplies host and session context to the skill.
 
   guard.py prompt   UserPromptSubmit: records the user's latest prompt and its
                     time per session. Only real user input reaches this hook, so
@@ -9,7 +11,7 @@ Two modes, wired in hooks/hooks.json:
 
   guard.py pretool  PreToolUse(Bash):
                     - `post.py <plan>` runs only if the user's latest prompt
-                      contains `ok <CODE>`, where CODE is derived from the plan
+                      is exactly `ok <CODE>`, where CODE is derived from the plan
                       file's content, and that prompt came after the plan was
                       written. Editing the plan after approval changes the code.
                     - once a session has touched pr-assistant scripts, `git commit`
@@ -30,10 +32,13 @@ import re
 import shlex
 import sys
 import time
+from approval import issue
 
 STATE_DIR = os.path.expanduser(os.environ.get("PR_ASSISTANT_STATE_DIR", "~/.cache/pr-assistant"))
 SESSIONS_DIR = os.path.join(STATE_DIR, "sessions")
 PLUGIN_MARKER = "pr-assistant"  # substring of the plugin's install path and script names
+PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+POST_SCRIPT = os.path.realpath(os.path.join(os.path.dirname(__file__), "post.py"))
 
 
 def plan_code(path):
@@ -84,7 +89,7 @@ GITHUB_WRITE_PATTERNS = [
 ]
 
 
-ATTRIBUTION = re.compile(r"co-authored-by:[^\n]*(claude|anthropic)|generated with \[?claude|claude\.com/claude-code",
+ATTRIBUTION = re.compile(r"co-authored-by:[^\n]*(claude|anthropic|codex|openai)|generated with \[?(claude|codex)|claude\.com/claude-code",
                          re.IGNORECASE)
 
 
@@ -108,20 +113,47 @@ def is_github_write(cmd):
 
 def post_plan_arg(cmd):
     """Plan path if the command runs pr-assistant's post.py, else None."""
-    if "post.py" not in cmd or PLUGIN_MARKER not in cmd:
+    if "post.py" not in cmd:
         return None
     try:
-        tokens = shlex.split(cmd)
+        lexer = shlex.shlex(cmd, posix=True, punctuation_chars=";&|<>")
+        lexer.whitespace_split = True
+        tokens = []
+        for token in lexer:
+            if token in ("<<", "<<-"):
+                break  # A heredoc's contents are data, not shell argv.
+            tokens.append(token)
     except ValueError:
-        return ""
-    for i, tok in enumerate(tokens):
-        if tok.endswith("post.py"):
-            rest = [t for t in tokens[i + 1:] if not t.startswith("-")]
-            return rest[0] if rest else ""
+        return None
+    invoked = any(os.path.realpath(tok) == POST_SCRIPT and
+                  (i == 0 or os.path.basename(tokens[i - 1]) in ("python", "python3"))
+                  for i, tok in enumerate(tokens))
+    if not invoked:
+        return None
+    while tokens and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tokens[0]):
+        tokens.pop(0)
+    if (len(tokens) == 3 and os.path.basename(tokens[0]) in ("python", "python3")
+            and os.path.realpath(tokens[1]) == POST_SCRIPT
+            and not re.search(r"[;&|`$\n]", cmd)):
+        return tokens[2]
     return ""
 
 
-def mode_prompt(event):
+def context(event, host):
+    sid = event.get("session_id", "")
+    if host not in ("claude", "codex") or not sid:
+        return
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": event.get("hook_event_name", "UserPromptSubmit"),
+        "additionalContext": f"For pr-assistant commands only, set PR_ASSISTANT_HOST={shlex.quote(host)} "
+        f"and PR_ASSISTANT_SESSION_ID={shlex.quote(sid)} on every shell invocation. "
+        f"Plugin root: {root}. reviewer=auto follows this host on every run; do not save a provider "
+        "on first use. Use absolute script paths when calling post.py alone."
+    }}))
+
+
+def mode_prompt(event, host):
     sid = event.get("session_id", "")
     data = load_session(sid)
     prompt = event.get("prompt", "") or ""
@@ -130,6 +162,8 @@ def mode_prompt(event):
     if PLUGIN_MARKER in prompt:
         data["active"] = True
     save_session(sid, data)
+    if data.get("active"):
+        context(event, host)
     sys.exit(0)
 
 
@@ -150,18 +184,23 @@ def mode_pretool(event):
             decide("deny", "pr-assistant: run post.py alone, without chained or substituted commands.")
         code = plan_code(plan)
         prompt = data.get("last_prompt", "") or ""
-        approved = re.search(r"\bok\s+" + code + r"\b", prompt, re.IGNORECASE)
+        approved = re.fullmatch(r"\s*ok\s+" + code + r"\s*", prompt, re.IGNORECASE)
         fresh = data.get("last_prompt_ts", 0) > os.path.getmtime(plan)
         if approved and fresh:
+            try:
+                issue(sid, plan, data["last_prompt_ts"])
+            except (OSError, ValueError) as error:
+                decide("deny", f"pr-assistant: could not record approval: {error}")
             decide("allow", f"pr-assistant: plan {code} approved by the user.")
         decide("deny",
                f"pr-assistant: plan not approved. Show the user the final drafts and ask them to reply "
                f"`ok {code}` to send exactly this plan. Do not post any other way.")
 
-    if PLUGIN_MARKER in cmd:
+    if PLUGIN_MARKER in cmd or PLUGIN_ROOT in cmd:
         if not data.get("active"):
             data["active"] = True
-            save_session(sid, data)
+        data["pretool_ts"] = time.time()
+        save_session(sid, data)
 
     if data.get("active") and is_attributed_commit(cmd):
         decide("deny",
@@ -175,13 +214,18 @@ def mode_pretool(event):
 
 
 def main():
+    if os.environ.get("PR_ASSISTANT_REVIEW_WORKER") == "1":
+        return
     mode = sys.argv[1] if len(sys.argv) > 1 else ""
+    host = sys.argv[2] if len(sys.argv) > 2 else "claude"
     try:
         event = json.load(sys.stdin)
     except ValueError:
         sys.exit(0)
-    if mode == "prompt":
-        mode_prompt(event)
+    if mode == "start":
+        context(dict(event, hook_event_name="SessionStart"), host)
+    elif mode == "prompt":
+        mode_prompt(event, host)
     elif mode == "pretool":
         mode_pretool(event)
     sys.exit(0)
