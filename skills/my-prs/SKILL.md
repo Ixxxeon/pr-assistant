@@ -7,10 +7,18 @@ argument-hint: "[repo or PR URL filter]"
 
 # Follow up on my PRs
 
-Scripts: `S="${CLAUDE_PLUGIN_ROOT}/scripts"`. State: `${PR_ASSISTANT_STATE_DIR:-~/.cache/pr-assistant}`.
+Scripts are in `../../scripts/` relative to this installed SKILL.md. Resolve that to an absolute path `S`; do not assume the working directory or a shell environment variable points to the plugin.
+
+The SessionStart hook provides `PR_ASSISTANT_HOST` and `PR_ASSISTANT_SESSION_ID`. Set both on **every** shell invocation of plugin scripts; exports may not persist between calls. Use the supplied session id, never invent one. Host is `claude` in Claude Code and `codex` in Codex, regardless of which CLIs are installed. The default `reviewer=auto` follows the host on every run; never persist the first host as the reviewer. Respect an explicit reviewer override.
+
+Before collecting PRs, run `python3 "$S/doctor.py"` with those environment variables. If hook context is absent or the check fails, explain the reported setup step. In Codex the user must trust the installed hooks in `/hooks` or Settings > Hooks; do not bypass hook trust, fabricate approval state, or continue to posting. This follow-up workflow does not start a separate reviewer CLI.
+
+State: `${PR_ASSISTANT_STATE_DIR:-~/.cache/pr-assistant}`.
 Talk to the user in the language they write in. Examples below are in Russian; when the user writes in another language, translate their labels too (e.g. `подтверждено` → `confirmed`, `вероятно` → `likely`, `без замечаний` → `no findings`, `между PR` → `cross-PR`, `можно мерджить` → `ready to merge`). Set `"lang"` in the plan to `"ru"` for Russian and `"en"` otherwise; it sets the language of the plan preview. Keep terminal output short.
 
 ## Hard rules
+
+For the final `post.py` call, expand `S` and the plan path to literal absolute paths in the tool command. Run only `PR_ASSISTANT_HOST=<host> PR_ASSISTANT_SESSION_ID=<hook-session-id> python3 /absolute/plugin/scripts/post.py /absolute/plan.json`, with shell quoting as needed; no preceding export, variable substitution, or chained command. `post.py` consumes the one-use approval receipt issued by the pretool hook.
 
 - **Never write to GitHub except through `python3 "$S/post.py" <plan>` run alone, after the user typed `ok <CODE>` for that plan.** This covers `git push` too. A hook enforces it; if it denies, ask the user instead of looking for another way.
 - Never touch the user's own clone, its branches or uncommitted work. Fixes are made in `<clone folder>/.pr-worktrees/<repo>-<number>` on the local branch `pr-assistant/<number>`. The one exception is `post.py`: after a push it fast-forwards the user's local `<head_ref>` to the pushed commit, and only when that is a pure fast-forward git accepts.
@@ -23,7 +31,7 @@ Talk to the user in the language they write in. Examples below are in Russian; w
 python3 "$S/config.py" get repos_dir
 ```
 
-Exit code 4 means the folder for repository clones is not set yet (first run). Ask the user once where their repositories live or should be cloned (AskUserQuestion; offer `~/projects`, `~/src`, `~/.cache/pr-assistant/repos` for separate clones, and "Other"), then save it:
+Exit code 4 means the folder for repository clones is not set yet (first run). Use a repository location already provided by the user; otherwise ask once where their repositories live or should be cloned, using the host's available question tool or a short chat question. Offer `~/projects`, `~/src`, or `~/.cache/pr-assistant/repos` for separate clones, then save it:
 
 ```bash
 python3 "$S/config.py" set repos_dir <path>
@@ -34,7 +42,7 @@ Existing clones there are reused when their `origin` is the same GitHub repo (`<
 ## 1. Collect
 
 ```bash
-"$S/list-my-prs.sh"                       # open PRs authored by the user; apply $ARGUMENTS as a filter
+"$S/list-my-prs.sh"                       # open PRs authored by the user; filter from the invocation text
 "$S/pr-status.py" <owner/repo> <number>   # per PR: approvals, ready_to_merge, threads/comments needing reply,
                                           # reviewers, suggested_rerequest, pending_review, pr_node_id
 ```
@@ -54,7 +62,7 @@ Read `notes`: if the worktree keeps earlier local commits or changes, tell the u
 For each comment, read the code it points to and decide:
 
 - **Agree, clear fix** → make the minimal change in the worktree. Run the repository's quick checks if AGENTS.md/README names them and they are cheap (compile, the affected tests); do not run long suites. Commit locally, **one commit per comment**, message `<JIRA-KEY from the PR title> review: <what changed>`. Draft a short reply: «Сделал», «Готово», «Добавил джавадок», «Переименовал в `X`», «Вынес в `Y`» / "Done", "Added the javadoc", "Renamed to `X`", "Moved to `Y`".
-- **Agree, but the change is large or ambiguous** → do not change code; draft a one-line plan or question and mark it `нужно твоё решение`.
+- **Agree, but the change is large or ambiguous** → do not change code; draft a one-line plan or question and mark it `нужно твое решение`.
 - **Disagree** → do not change code; draft a short reasoned reply (one or two sentences, concrete: why the current code is fine) and mark it `не согласен`.
 - **Question** → draft a direct answer.
 

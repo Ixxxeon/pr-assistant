@@ -1,0 +1,11 @@
+{
+  "name": "pr-assistant",
+  "version": "0.6.0",
+  "description": "Review requested GitHub PRs and follow up on your own PRs. The reviewer follows the host automatically; GitHub writes require a typed approval.",
+  "author": { "name": "Ixxxeon" },
+  "skills": "./skills/",
+  "hooks": "./hooks/codex.json",
+  "homepage": "https://github.com/Ixxxeon/pr-assistant",
+  "repository": "https://github.com/Ixxxeon/pr-assistant",
+  "license": "MIT"
+}
